@@ -1,8 +1,11 @@
 # utree
 
-`utree` is a small Go CLI for managing git worktree-backed tmux workspaces. The command name is `ut`.
+Git branches as persistent workspaces.
 
-`utree` is focused on one layout: a project directory that contains `.utree/` plus sibling git worktrees.
+`utree` is a small Go CLI, invoked as `ut`, that turns git worktrees into tmux-backed branch workspaces. 
+It gives you a simple way to keep track of active branches and jump between them without losing local context.
+
+`utree` uses one project layout: a `.utree/` directory plus sibling git worktrees.
 
 ```text
 project/
