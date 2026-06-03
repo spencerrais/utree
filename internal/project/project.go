@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/spencerrais/utree/internal/git"
 )
 
 var (
@@ -86,8 +87,7 @@ func detectFromProjectRoot(startDir string, findGitRoot GitRootFinder) (Project,
 }
 
 func GitRevParseRoot(startDir string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = startDir
+	cmd := git.Command(startDir, "rev-parse", "--show-toplevel")
 
 	output, err := cmd.Output()
 	if err != nil {

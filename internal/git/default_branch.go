@@ -3,7 +3,6 @@ package git
 import (
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -102,8 +101,7 @@ func (s CommandBranchSource) run(name string, args ...string) ([]byte, error) {
 		return s.Run(s.Dir, name, args...)
 	}
 
-	cmd := exec.Command(name, args...)
-	cmd.Dir = s.Dir
+	cmd := Command(s.Dir, args...)
 	return cmd.Output()
 }
 

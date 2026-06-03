@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/spencerrais/utree/internal/config"
@@ -151,8 +150,7 @@ func withDefaultNewDependencies(deps NewDependencies) NewDependencies {
 	}
 	if deps.CurrentBranch == nil {
 		deps.CurrentBranch = func(dir string) (string, error) {
-			cmd := exec.Command("git", "branch", "--show-current")
-			cmd.Dir = dir
+			cmd := git.Command(dir, "branch", "--show-current")
 			output, err := cmd.Output()
 			if err != nil {
 				return "", fmt.Errorf("git branch --show-current: %w", err)

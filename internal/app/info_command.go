@@ -187,8 +187,7 @@ func defaultInfoDefaultBranch(proj project.Project, configDefaultBranch string) 
 	return git.ResolveDefaultBranch(git.FallbackMode, git.DefaultBranchOptions{ConfigDefaultBranch: configDefaultBranch}, git.CommandBranchSource{Dir: proj.GitRoot})
 }
 func defaultCurrentBranch(dir string) (string, error) {
-	cmd := exec.Command("git", "branch", "--show-current")
-	cmd.Dir = dir
+	cmd := git.Command(dir, "branch", "--show-current")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
