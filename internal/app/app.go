@@ -1,8 +1,10 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spencerrais/utree/internal/config"
 	"github.com/spencerrais/utree/internal/convert"
@@ -145,7 +147,7 @@ func (a App) Run(args []string) int {
 	}
 	if args[0] == "list" {
 		if err := a.runList(args[1:]); err != nil {
-			fmt.Fprintf(a.Stderr, "list: %v\n", err)
+			fmt.Fprintf(a.Stderr, "list: %s\n", formatListError(err))
 			return 1
 		}
 		return 0
@@ -167,4 +169,16 @@ func (a App) Run(args []string) int {
 
 	fmt.Fprintf(a.Stderr, "unknown command: %s\n\n%s", args[0], helpText)
 	return 1
+}
+
+func formatListError(err error) string {
+	if errors.Is(err, project.ErrNotGitRepository) {
+		detail := strings.TrimPrefix(err.Error(), project.ErrNotGitRepository.Error())
+		detail = strings.TrimPrefix(detail, ": ")
+		if detail == "" {
+			return "not inside a git repository or utree project"
+		}
+		return "not inside a git repository or utree project: " + detail
+	}
+	return err.Error()
 }

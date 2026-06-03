@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/spencerrais/utree/internal/config"
+	"github.com/spencerrais/utree/internal/git"
 	"github.com/spencerrais/utree/internal/project"
 )
 
@@ -100,6 +101,69 @@ func TestPlanNewWarnsWhenCurrentBranchDiffersFromDefaultWithoutBase(t *testing.T
 	}
 }
 
+func TestPlanNewDetectsEnvFileFromCurrentWorktree(t *testing.T) {
+	projectRoot, gitRoot := newWorkspaceProject(t, "main")
+	writeWorkspaceFile(t, filepath.Join(gitRoot, ".env"), "TOKEN=source\n")
+
+	plan, err := PlanNew(gitRoot, NewOptions{WorktreeName: "feature-a"}, fakePlanDeps(projectRoot, gitRoot, "main", "main"))
+	if err != nil {
+		t.Fatalf("PlanNew returned error: %v", err)
+	}
+
+	if !plan.HasEnvFile {
+		t.Fatal("expected env file detection")
+	}
+	if plan.EnvFilePath != filepath.Join(gitRoot, ".env") || plan.EnvFileWorktreeName != "main" {
+		t.Fatalf("unexpected env source: %+v", plan)
+	}
+}
+
+func TestPlanNewFromProjectRootDetectsEnvFileFromDefaultBranchWorktree(t *testing.T) {
+	projectRoot, gitRoot := newWorkspaceProject(t, "main")
+	featureRoot := mkdirWorkspace(t, filepath.Join(projectRoot, "feature-a"))
+	writeWorkspaceFile(t, filepath.Join(gitRoot, ".env"), "TOKEN=main\n")
+	deps := fakePlanDeps(projectRoot, gitRoot, "main", "main")
+	deps.DetectProject = func(string) (project.Project, error) {
+		return project.Project{Root: projectRoot, GitRoot: gitRoot, WorktreeName: ""}, nil
+	}
+	deps.Worktrees = func(string) ([]git.Worktree, error) {
+		return []git.Worktree{
+			{Path: gitRoot, Branch: "main", Name: "main"},
+			{Path: featureRoot, Branch: "feature-a", Name: "feature-a"},
+		}, nil
+	}
+
+	plan, err := PlanNew(projectRoot, NewOptions{WorktreeName: "bugfix-b"}, deps)
+	if err != nil {
+		t.Fatalf("PlanNew returned error: %v", err)
+	}
+
+	if !plan.HasEnvFile || plan.EnvFilePath != filepath.Join(gitRoot, ".env") || plan.EnvFileWorktreeName != "main" {
+		t.Fatalf("unexpected env source: %+v", plan)
+	}
+}
+
+func TestPlanNewFromProjectRootSilentlySkipsEnvWhenDefaultBranchWorktreeMissing(t *testing.T) {
+	projectRoot, gitRoot := newWorkspaceProject(t, "feature-a")
+	writeWorkspaceFile(t, filepath.Join(gitRoot, ".env"), "TOKEN=feature\n")
+	deps := fakePlanDeps(projectRoot, gitRoot, "main", "feature-a")
+	deps.DetectProject = func(string) (project.Project, error) {
+		return project.Project{Root: projectRoot, GitRoot: gitRoot, WorktreeName: ""}, nil
+	}
+	deps.Worktrees = func(string) ([]git.Worktree, error) {
+		return []git.Worktree{{Path: gitRoot, Branch: "feature-a", Name: "feature-a"}}, nil
+	}
+
+	plan, err := PlanNew(projectRoot, NewOptions{WorktreeName: "bugfix-b"}, deps)
+	if err != nil {
+		t.Fatalf("PlanNew returned error: %v", err)
+	}
+
+	if plan.HasEnvFile || plan.EnvFilePath != "" || plan.EnvFileWorktreeName != "" {
+		t.Fatalf("expected env source to be skipped, got %+v", plan)
+	}
+}
+
 func TestPlanNewRejectsExistingTargetPathBeforeGit(t *testing.T) {
 	projectRoot, gitRoot := newWorkspaceProject(t, "main")
 	if err := os.Mkdir(filepath.Join(projectRoot, "feature-a"), 0o755); err != nil {
@@ -152,6 +216,113 @@ func TestExecuteNewCreatesGitWorktreeThenOpensTmux(t *testing.T) {
 	if strings.Join(deps.calls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("expected calls %v, got %v", want, deps.calls)
 	}
+}
+
+func TestExecuteNewDeclinesEnvCopyAndStillOpensTmux(t *testing.T) {
+	plan := NewPlan{Project: project.Project{Root: "/repo", GitRoot: "/repo/main"}, WorktreeName: "feature-a", BranchName: "feature-a", TargetPath: "/repo/feature-a", DefaultBranch: "main", CurrentBranch: "main", StartPoint: "main", HasEnvFile: true, EnvFilePath: "/repo/main/.env", EnvFileWorktreeName: "main", Config: config.Default()}
+	deps := &fakeExecuteDeps{insideTmux: true}
+	var stdout bytes.Buffer
+
+	executed, err := ExecuteNew(plan, deps, strings.NewReader("n\n"), &stdout)
+	if err != nil {
+		t.Fatalf("ExecuteNew returned error: %v", err)
+	}
+	if !executed {
+		t.Fatal("expected execution")
+	}
+	assertContains(t, stdout.String(), "Copy .env from main to new worktree? [y/N]")
+	want := []string{
+		"has:repo--feature-a",
+		"git:/repo/main:/repo/feature-a:feature-a:main",
+		"layout:repo--feature-a:/repo/feature-a:nvim .; exec ${SHELL:-/bin/sh} -l|selected,vertical:33%:git status; exec ${SHELL:-/bin/sh} -l",
+		"open:repo--feature-a:true",
+	}
+	if strings.Join(deps.calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("expected calls %v, got %v", want, deps.calls)
+	}
+}
+
+func TestExecuteNewAcceptsEnvCopyBeforeOpeningTmux(t *testing.T) {
+	plan := NewPlan{Project: project.Project{Root: "/repo", GitRoot: "/repo/main"}, WorktreeName: "feature-a", BranchName: "feature-a", TargetPath: "/repo/feature-a", DefaultBranch: "main", CurrentBranch: "main", StartPoint: "main", HasEnvFile: true, EnvFilePath: "/repo/main/.env", EnvFileWorktreeName: "main", Config: config.Default()}
+	deps := &fakeExecuteDeps{insideTmux: true}
+
+	executed, err := ExecuteNew(plan, deps, strings.NewReader("yes\n"), io.Discard)
+	if err != nil {
+		t.Fatalf("ExecuteNew returned error: %v", err)
+	}
+	if !executed {
+		t.Fatal("expected execution")
+	}
+	want := []string{
+		"has:repo--feature-a",
+		"git:/repo/main:/repo/feature-a:feature-a:main",
+		"copy:/repo/main/.env:/repo/feature-a/.env",
+		"layout:repo--feature-a:/repo/feature-a:nvim .; exec ${SHELL:-/bin/sh} -l|selected,vertical:33%:git status; exec ${SHELL:-/bin/sh} -l",
+		"open:repo--feature-a:true",
+	}
+	if strings.Join(deps.calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("expected calls %v, got %v", want, deps.calls)
+	}
+}
+
+func TestExecuteNewDetachCreatesLayoutWithoutOpeningTmux(t *testing.T) {
+	plan := NewPlan{Project: project.Project{Root: "/repo", GitRoot: "/repo/main"}, WorktreeName: "feature-a", BranchName: "feature-a", TargetPath: "/repo/feature-a", DefaultBranch: "main", CurrentBranch: "main", StartPoint: "main", Detach: true, Config: config.Default()}
+	deps := &fakeExecuteDeps{insideTmux: true}
+
+	executed, err := ExecuteNew(plan, deps, nil, io.Discard)
+	if err != nil {
+		t.Fatalf("ExecuteNew returned error: %v", err)
+	}
+	if !executed {
+		t.Fatal("expected execution")
+	}
+	want := []string{
+		"has:repo--feature-a",
+		"git:/repo/main:/repo/feature-a:feature-a:main",
+		"layout:repo--feature-a:/repo/feature-a:nvim .; exec ${SHELL:-/bin/sh} -l|selected,vertical:33%:git status; exec ${SHELL:-/bin/sh} -l",
+	}
+	if strings.Join(deps.calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("expected calls %v, got %v", want, deps.calls)
+	}
+}
+
+func TestExecuteNewDetachStillCopiesEnvBeforeLayout(t *testing.T) {
+	plan := NewPlan{Project: project.Project{Root: "/repo", GitRoot: "/repo/main"}, WorktreeName: "feature-a", BranchName: "feature-a", TargetPath: "/repo/feature-a", DefaultBranch: "main", CurrentBranch: "main", StartPoint: "main", Detach: true, HasEnvFile: true, EnvFilePath: "/repo/main/.env", EnvFileWorktreeName: "main", Config: config.Default()}
+	deps := &fakeExecuteDeps{insideTmux: true}
+
+	executed, err := ExecuteNew(plan, deps, strings.NewReader("yes\n"), io.Discard)
+	if err != nil {
+		t.Fatalf("ExecuteNew returned error: %v", err)
+	}
+	if !executed {
+		t.Fatal("expected execution")
+	}
+	want := []string{
+		"has:repo--feature-a",
+		"git:/repo/main:/repo/feature-a:feature-a:main",
+		"copy:/repo/main/.env:/repo/feature-a/.env",
+		"layout:repo--feature-a:/repo/feature-a:nvim .; exec ${SHELL:-/bin/sh} -l|selected,vertical:33%:git status; exec ${SHELL:-/bin/sh} -l",
+	}
+	if strings.Join(deps.calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("expected calls %v, got %v", want, deps.calls)
+	}
+}
+
+func TestExecuteNewHandlesDefaultBranchWarningAndEnvCopyPromptsInOrder(t *testing.T) {
+	plan := NewPlan{Project: project.Project{Root: "/repo", GitRoot: "/repo/main"}, WorktreeName: "feature-a", BranchName: "feature-a", TargetPath: "/repo/feature-a", DefaultBranch: "main", CurrentBranch: "feature/current-task", StartPoint: "main", RequiresDefaultBranchWarning: true, HasEnvFile: true, EnvFilePath: "/repo/main/.env", EnvFileWorktreeName: "main", Config: config.Default()}
+	deps := &fakeExecuteDeps{insideTmux: true}
+	var stdout bytes.Buffer
+
+	executed, err := ExecuteNew(plan, deps, strings.NewReader("yes\nyes\n"), &stdout)
+	if err != nil {
+		t.Fatalf("ExecuteNew returned error: %v", err)
+	}
+	if !executed {
+		t.Fatal("expected execution")
+	}
+	assertContains(t, stdout.String(), "Current branch is not the detected default branch.")
+	assertContains(t, stdout.String(), "Copy .env from main to new worktree? [y/N]")
+	assertContains(t, strings.Join(deps.calls, "\n"), "copy:/repo/main/.env:/repo/feature-a/.env")
 }
 
 func TestExecuteNewIncludesBranchWhenWorktreeNameDiffers(t *testing.T) {
@@ -238,6 +409,21 @@ func newWorkspaceProject(t *testing.T, currentWorktree string) (string, string) 
 	return projectRoot, gitRoot
 }
 
+func mkdirWorkspace(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("create dir %s: %v", path, err)
+	}
+	return path
+}
+
+func writeWorkspaceFile(t *testing.T, path string, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
 type fakeExecuteDeps struct {
 	calls         []string
 	gitCalls      int
@@ -250,6 +436,11 @@ type fakeExecuteDeps struct {
 func (f *fakeExecuteDeps) WorktreeAddNewBranch(dir string, path string, branch string, startPoint string) error {
 	f.gitCalls++
 	f.calls = append(f.calls, "git:"+dir+":"+path+":"+branch+":"+startPoint)
+	return nil
+}
+
+func (f *fakeExecuteDeps) CopyFile(source string, target string) error {
+	f.calls = append(f.calls, "copy:"+source+":"+target)
 	return nil
 }
 

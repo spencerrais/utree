@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -42,6 +43,34 @@ func TestRunNewParsesOneNameAndFlagsAfterPositionals(t *testing.T) {
 		t.Fatalf("expected base main, got %q", gotOptions.BaseBranch)
 	}
 }
+
+func TestRunNewParsesDetachFlags(t *testing.T) {
+	for _, args := range [][]string{{"new", "feature-a", "-d"}, {"new", "feature-a", "--detach"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			gotOptions := workspace.NewOptions{}
+
+			app := App{Stdout: &stdout, Stderr: &stderr, New: NewDependencies{
+				WorkingDir: func() (string, error) { return "/repo/main", nil },
+				Plan: func(_ string, options workspace.NewOptions) (workspace.NewPlan, error) {
+					gotOptions = options
+					return workspace.NewPlan{WorktreeName: options.WorktreeName, BranchName: options.BranchName, Detach: options.Detach}, nil
+				},
+				Execute: func(workspace.NewPlan, io.Reader, io.Writer) (bool, error) { return true, nil },
+			}}
+
+			exitCode := app.Run(args)
+			if exitCode != 0 {
+				t.Fatalf("expected exit code 0, got %d; stderr %q", exitCode, stderr.String())
+			}
+			if !gotOptions.Detach {
+				t.Fatalf("expected detach option for args %v", args)
+			}
+		})
+	}
+}
+
 func TestRunNewPassesWarningConfirmationReader(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -248,4 +277,28 @@ func TestRunListPropagatesProjectDetectionFailure(t *testing.T) {
 	}
 	assertContains(t, stderr.String(), "list:")
 	assertContains(t, stderr.String(), project.ErrNotUtreeProject.Error())
+}
+
+func TestRunListMentionsUtreeProjectRootForGitRepositoryFailure(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	app := App{Stdout: &stdout, Stderr: &stderr, List: ListDependencies{
+		WorkingDir: func() (string, error) { return "/repo", nil },
+		Plan: func(string) (workspace.ListPlan, error) {
+			return workspace.ListPlan{}, fmt.Errorf("%w: git rev-parse --show-toplevel failed", project.ErrNotGitRepository)
+		},
+		Render: func(workspace.ListPlan) string { t.Fatal("did not expect render"); return "" },
+	}}
+
+	exitCode := app.Run([]string{"list"})
+
+	if exitCode == 0 {
+		t.Fatal("expected non-zero exit code")
+	}
+	if stdout.String() != "" {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+	assertContains(t, stderr.String(), "list: not inside a git repository or utree project")
+	assertContains(t, stderr.String(), "git rev-parse --show-toplevel failed")
 }

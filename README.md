@@ -58,9 +58,12 @@ Adopt an existing sibling-worktree layout without moving files.
 ```bash
 cd ~/code/project/main
 ut adopt
+cd ~/code/project
+ut adopt
 ```
 
-The current git repository must already be a direct child of the project directory, such as `project/main`, and the directory name must match the current branch name. 
+The existing git repository must already be a direct child of the project directory, such as `project/main`. 
+You can run `ut adopt` from a direct-child worktree or from the project root. 
 If the repository has linked git worktrees, they must also be direct children of the same project directory. 
 `ut adopt` refuses to run inside an existing utree project. 
 The command previews the marker it will create, asks for confirmation, and creates only `.utree/`. 
@@ -91,10 +94,15 @@ Create a new sibling git worktree and open it in tmux.
 ut new feature-a
 ut new firehose-role tg-123-firehose-role
 ut new bugfix-b --base feature-a
+ut new feature-a --detach
 ```
 
 Without `--base`, new work starts from the detected default branch. 
 If your current branch is not the default branch, `ut new` warns and asks before continuing.
+If the selected source worktree has a `.env` file, `ut new` asks whether to copy it into the new worktree. 
+When run from inside a worktree, the source is that worktree. 
+When run from the project root, the source is the default-branch worktree if it is checked out.
+Use `-d` or `--detach` to create the worktree and tmux session without switching or attaching to it.
 
 ### `ut open`
 

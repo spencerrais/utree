@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spencerrais/utree/internal/config"
@@ -17,6 +18,7 @@ type NewOptions struct {
 	WorktreeName          string
 	BranchName            string
 	BaseBranch            string
+	Detach                bool
 	DefaultBranchOverride *string
 }
 
@@ -28,7 +30,11 @@ type NewPlan struct {
 	DefaultBranch                string
 	CurrentBranch                string
 	StartPoint                   string
+	Detach                       bool
 	RequiresDefaultBranchWarning bool
+	HasEnvFile                   bool
+	EnvFilePath                  string
+	EnvFileWorktreeName          string
 	Config                       config.Config
 }
 
@@ -37,11 +43,14 @@ type NewDependencies struct {
 	LoadConfig    func(projectRoot string, overrides config.Overrides) (config.Config, error)
 	DefaultBranch func(project.Project, string, *string) (string, error)
 	CurrentBranch func(dir string) (string, error)
+	Worktrees     func(dir string) ([]git.Worktree, error)
+	FileExists    func(path string) (bool, error)
 }
 
 type NewExecutionDependencies interface {
 	SessionDependencies
 	WorktreeAddNewBranch(dir string, path string, branch string, startPoint string) error
+	CopyFile(source string, target string) error
 }
 
 func PlanNew(startDir string, options NewOptions, deps NewDependencies) (NewPlan, error) {
@@ -83,6 +92,10 @@ func PlanNew(startDir string, options NewOptions, deps NewDependencies) (NewPlan
 		startPoint = defaultBranch
 		requiresWarning = currentBranch != "" && currentBranch != defaultBranch
 	}
+	envFilePath, envWorktreeName, hasEnvFile, err := planNewEnvSource(proj, defaultBranch, deps)
+	if err != nil {
+		return NewPlan{}, err
+	}
 
 	return NewPlan{
 		Project:                      proj,
@@ -92,20 +105,73 @@ func PlanNew(startDir string, options NewOptions, deps NewDependencies) (NewPlan
 		DefaultBranch:                defaultBranch,
 		CurrentBranch:                currentBranch,
 		StartPoint:                   startPoint,
+		Detach:                       options.Detach,
 		RequiresDefaultBranchWarning: requiresWarning,
+		HasEnvFile:                   hasEnvFile,
+		EnvFilePath:                  envFilePath,
+		EnvFileWorktreeName:          envWorktreeName,
 		Config:                       cfg,
 	}, nil
 }
 
-func ExecuteNew(plan NewPlan, deps NewExecutionDependencies, confirmation io.Reader, stdout io.Writer) (bool, error) {
-	if plan.RequiresDefaultBranchWarning {
-		if stdout == nil {
-			stdout = io.Discard
+func planNewEnvSource(proj project.Project, defaultBranch string, deps NewDependencies) (string, string, bool, error) {
+	sourceRoot := ""
+	sourceName := ""
+	if strings.TrimSpace(proj.WorktreeName) != "" {
+		sourceRoot = proj.GitRoot
+		sourceName = proj.WorktreeName
+	} else {
+		worktrees, err := deps.Worktrees(proj.GitRoot)
+		if err != nil {
+			return "", "", false, err
 		}
+		projectRoot, err := cleanAbs(proj.Root)
+		if err != nil {
+			return "", "", false, err
+		}
+		for _, worktree := range worktrees {
+			path, err := cleanAbs(worktree.Path)
+			if err != nil {
+				return "", "", false, err
+			}
+			if worktree.Branch != defaultBranch || filepath.Dir(path) != projectRoot {
+				continue
+			}
+			sourceRoot = path
+			sourceName = worktree.Name
+			if strings.TrimSpace(sourceName) == "" {
+				sourceName = filepath.Base(path)
+			}
+			break
+		}
+	}
+	if strings.TrimSpace(sourceRoot) == "" {
+		return "", "", false, nil
+	}
+	envPath := filepath.Join(sourceRoot, ".env")
+	exists, err := deps.FileExists(envPath)
+	if err != nil {
+		return "", "", false, err
+	}
+	if !exists {
+		return "", "", false, nil
+	}
+	return envPath, sourceName, true, nil
+}
+
+func ExecuteNew(plan NewPlan, deps NewExecutionDependencies, confirmation io.Reader, stdout io.Writer) (bool, error) {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	confirmationScanner := bufio.NewScanner(strings.NewReader(""))
+	if confirmation != nil {
+		confirmationScanner = bufio.NewScanner(confirmation)
+	}
+	if plan.RequiresDefaultBranchWarning {
 		if _, err := fmt.Fprintf(stdout, "Current branch is not the detected default branch.\n\nDetected default branch: %s\nCurrent branch:          %s\n\n`ut new` will create the new worktree from `%s`.\n\nUse `--base %s` if you want to branch from the current branch.\n\nContinue? [y/N] ", plan.DefaultBranch, plan.CurrentBranch, plan.DefaultBranch, plan.CurrentBranch); err != nil {
 			return false, err
 		}
-		if !confirmed(confirmation) {
+		if !confirmedScan(confirmationScanner) {
 			return false, nil
 		}
 	}
@@ -124,9 +190,22 @@ func ExecuteNew(plan NewPlan, deps NewExecutionDependencies, confirmation io.Rea
 	if err := deps.WorktreeAddNewBranch(plan.Project.GitRoot, plan.TargetPath, plan.BranchName, plan.StartPoint); err != nil {
 		return false, err
 	}
+	if plan.HasEnvFile {
+		if _, err := fmt.Fprintf(stdout, "Copy .env from %s to new worktree? [y/N] ", plan.EnvFileWorktreeName); err != nil {
+			return true, err
+		}
+		if confirmedScan(confirmationScanner) {
+			if err := deps.CopyFile(plan.EnvFilePath, filepath.Join(plan.TargetPath, ".env")); err != nil {
+				return true, fmt.Errorf("worktree created at %s but .env copy failed: %w", plan.TargetPath, err)
+			}
+		}
+	}
 
 	if err := deps.CreateDefaultLayout(session, plan.TargetPath, plan.Config.Layout.Default); err != nil {
 		return false, fmt.Errorf("worktree created at %s but tmux open failed: %w", plan.TargetPath, err)
+	}
+	if plan.Detach {
+		return true, nil
 	}
 	if err := deps.OpenSession(session, deps.InsideTmux()); err != nil {
 		return false, fmt.Errorf("worktree created at %s but tmux open failed: %w", plan.TargetPath, err)
@@ -158,6 +237,14 @@ func withDefaultNewDependencies(deps NewDependencies) NewDependencies {
 			return strings.TrimSpace(string(output)), nil
 		}
 	}
+	if deps.Worktrees == nil {
+		deps.Worktrees = func(dir string) ([]git.Worktree, error) {
+			return git.Adapter{Dir: dir}.WorktreeList()
+		}
+	}
+	if deps.FileExists == nil {
+		deps.FileExists = fileExists
+	}
 	return deps
 }
 
@@ -165,16 +252,50 @@ func renderNewWorktreeSession(plan NewPlan) (string, error) {
 	return tmux.RenderSessionName(plan.Project.Root, plan.Config.Project.Name, plan.WorktreeName, plan.BranchName, plan.Config.Session.NameTemplate)
 }
 
-func confirmed(reader io.Reader) bool {
-	if reader == nil {
-		return false
+func fileExists(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err == nil {
+		return !info.IsDir(), nil
 	}
-	scanner := bufio.NewScanner(reader)
-	if !scanner.Scan() {
-		return false
+	if os.IsNotExist(err) {
+		return false, nil
 	}
-	answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
-	return answer == "y" || answer == "yes"
+	return false, err
+}
+
+func copyFile(source string, target string) error {
+	info, err := os.Stat(source)
+	if err != nil {
+		return fmt.Errorf("stat source file %s: %w", source, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("source file is a directory: %s", source)
+	}
+
+	in, err := os.Open(source)
+	if err != nil {
+		return fmt.Errorf("open source file %s: %w", source, err)
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("target file already exists: %s", target)
+		}
+		return fmt.Errorf("create target file %s: %w", target, err)
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(target)
+		return fmt.Errorf("copy %s to %s: %w", source, target, err)
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(target)
+		return fmt.Errorf("close target file %s: %w", target, err)
+	}
+	return nil
 }
 
 type DefaultNewExecutionDependencies struct {
@@ -183,6 +304,10 @@ type DefaultNewExecutionDependencies struct {
 
 func (d DefaultNewExecutionDependencies) WorktreeAddNewBranch(dir string, path string, branch string, startPoint string) error {
 	return git.Adapter{Dir: dir}.WorktreeAddNewBranch(path, branch, startPoint)
+}
+
+func (d DefaultNewExecutionDependencies) CopyFile(source string, target string) error {
+	return copyFile(source, target)
 }
 
 func (d DefaultNewExecutionDependencies) HasSession(session string) (bool, error) {
