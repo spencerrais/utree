@@ -3,11 +3,11 @@ package app
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/spencerrais/utree/internal/git"
 	"github.com/spencerrais/utree/internal/project"
 )
 
@@ -146,8 +146,7 @@ func assertInfoFileContains(t *testing.T, path string, want string) {
 func runInfoGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
+	cmd := git.Command(dir, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(output))

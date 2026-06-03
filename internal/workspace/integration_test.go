@@ -203,8 +203,7 @@ func newGitProject(t *testing.T) (string, string) {
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
+	cmd := git.Command(dir, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, string(output))

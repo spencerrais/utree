@@ -2,7 +2,6 @@ package git
 
 import (
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -137,7 +136,6 @@ func (a Adapter) run(dir string, name string, args ...string) ([]byte, error) {
 		return a.Run(dir, name, args...)
 	}
 
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
+	cmd := Command(dir, args...)
 	return cmd.Output()
 }

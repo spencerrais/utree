@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -345,8 +344,7 @@ func defaultBranchSource(repoRoot string) git.BranchSource {
 }
 
 func defaultCurrentBranch(repoRoot string) (string, error) {
-	cmd := exec.Command("git", "branch", "--show-current")
-	cmd.Dir = repoRoot
+	cmd := git.Command(repoRoot, "branch", "--show-current")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git branch --show-current: %w", err)
@@ -359,8 +357,7 @@ func defaultWorktrees(repoRoot string) ([]git.Worktree, error) {
 }
 
 func defaultStatusPorcelain(repoRoot string) (string, error) {
-	cmd := exec.Command("git", "status", "--porcelain", "--untracked-files=all")
-	cmd.Dir = repoRoot
+	cmd := git.Command(repoRoot, "status", "--porcelain", "--untracked-files=all")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git status --porcelain: %w", err)
