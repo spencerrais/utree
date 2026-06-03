@@ -50,6 +50,68 @@ func TestIntegrationNewWorktreeCreationWithRealGitAndFakeTmux(t *testing.T) {
 	}
 }
 
+func TestIntegrationNewCopiesEnvFileAfterPrompt(t *testing.T) {
+	projectRoot, mainRoot := newGitProject(t)
+	if err := os.WriteFile(filepath.Join(mainRoot, ".env"), []byte("TOKEN=secret\n"), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	deps := &fakeNewExecutionDeps{insideTmux: true}
+
+	plan, err := PlanNew(mainRoot, NewOptions{WorktreeName: "feature-env"}, NewDependencies{})
+	if err != nil {
+		t.Fatalf("PlanNew returned error: %v", err)
+	}
+	if !plan.HasEnvFile || plan.EnvFilePath != filepath.Join(mainRoot, ".env") {
+		t.Fatalf("expected env source in plan, got %+v", plan)
+	}
+
+	executed, err := ExecuteNew(plan, deps, strings.NewReader("yes\n"), io.Discard)
+	if err != nil {
+		t.Fatalf("ExecuteNew returned error: %v", err)
+	}
+	if !executed {
+		t.Fatal("expected new worktree execution")
+	}
+	contents, err := os.ReadFile(filepath.Join(projectRoot, "feature-env", ".env"))
+	if err != nil {
+		t.Fatalf("read copied .env: %v", err)
+	}
+	if string(contents) != "TOKEN=secret\n" {
+		t.Fatalf("expected copied .env contents, got %q", string(contents))
+	}
+}
+
+func TestIntegrationNewDetachCreatesLayoutWithoutOpeningSession(t *testing.T) {
+	projectRoot, mainRoot := newGitProject(t)
+	deps := &fakeNewExecutionDeps{insideTmux: true}
+
+	plan, err := PlanNew(mainRoot, NewOptions{WorktreeName: "feature-detached", Detach: true}, NewDependencies{})
+	if err != nil {
+		t.Fatalf("PlanNew returned error: %v", err)
+	}
+	if !plan.Detach {
+		t.Fatal("expected detach flag in plan")
+	}
+
+	executed, err := ExecuteNew(plan, deps, nil, io.Discard)
+	if err != nil {
+		t.Fatalf("ExecuteNew returned error: %v", err)
+	}
+	if !executed {
+		t.Fatal("expected new worktree execution")
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "feature-detached", ".git")); err != nil {
+		t.Fatalf("expected created worktree .git file: %v", err)
+	}
+	want := []string{
+		"has:" + filepath.Base(projectRoot) + "--feature-detached",
+		"layout:" + filepath.Base(projectRoot) + "--feature-detached:" + filepath.Join(projectRoot, "feature-detached") + ":nvim .; exec ${SHELL:-/bin/sh} -l|selected,vertical:33%:git status; exec ${SHELL:-/bin/sh} -l",
+	}
+	if strings.Join(deps.calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("expected tmux calls %v, got %v", want, deps.calls)
+	}
+}
+
 func TestIntegrationOpenSessionPlanningUsesRealGitWorktreeListAndFakeTmux(t *testing.T) {
 	projectRoot, mainRoot := newGitProject(t)
 	runGit(t, mainRoot, "worktree", "add", "-b", "feature-open", filepath.Join(projectRoot, "feature-open"), "main")
@@ -218,6 +280,11 @@ type fakeNewExecutionDeps struct {
 
 func (v *fakeNewExecutionDeps) WorktreeAddNewBranch(dir string, path string, branch string, startPoint string) error {
 	return git.Adapter{Dir: dir}.WorktreeAddNewBranch(path, branch, startPoint)
+}
+
+func (v *fakeNewExecutionDeps) CopyFile(source string, target string) error {
+	v.calls = append(v.calls, "copy:"+source+":"+target)
+	return copyFile(source, target)
 }
 
 func (v *fakeNewExecutionDeps) HasSession(session string) (bool, error) {

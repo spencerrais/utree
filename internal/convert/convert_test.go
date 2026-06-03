@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/spencerrais/utree/internal/git"
+	"github.com/spencerrais/utree/internal/project"
 )
 
 func TestPlanRequiresRepositoryRoot(t *testing.T) {
@@ -330,6 +331,55 @@ func TestPlanAdoptionAcceptsExistingSiblingWorktreeLayout(t *testing.T) {
 	}
 }
 
+func TestPlanAdoptionAcceptsWorktreeDirectoryThatDiffersFromBranch(t *testing.T) {
+	projectRoot := t.TempDir()
+	rootWorktree := mkdir(t, filepath.Join(projectRoot, "root-folder"))
+	deps := cleanPlanDeps(rootWorktree)
+	deps.CurrentBranch = func(string) (string, error) { return "develop", nil }
+	deps.Worktrees = func(string) ([]git.Worktree, error) {
+		return []git.Worktree{{Path: rootWorktree, Branch: "develop", Name: "root-folder"}}, nil
+	}
+
+	plan, err := PlanAdoption(rootWorktree, deps.Dependencies)
+	if err != nil {
+		t.Fatalf("PlanAdoption returned error: %v", err)
+	}
+	if plan.ProjectRoot != projectRoot || plan.WorktreeRoot != rootWorktree || plan.WorktreeName != "root-folder" {
+		t.Fatalf("unexpected adoption plan: %+v", plan)
+	}
+}
+
+func TestPlanAdoptionAcceptsExistingSiblingWorktreeLayoutFromProjectRoot(t *testing.T) {
+	projectRoot := t.TempDir()
+	mainRoot := mkdir(t, filepath.Join(projectRoot, "main"))
+	featureRoot := mkdir(t, filepath.Join(projectRoot, "feature-a"))
+	deps := cleanPlanDeps(mainRoot)
+	deps.GitRoot = func(startDir string) (string, error) {
+		startDir = filepath.Clean(startDir)
+		if startDir == projectRoot {
+			return "", project.ErrNotGitRepository
+		}
+		if startDir == mainRoot || strings.HasPrefix(startDir, mainRoot+string(filepath.Separator)) {
+			return mainRoot, nil
+		}
+		return "", project.ErrNotGitRepository
+	}
+	deps.Worktrees = func(string) ([]git.Worktree, error) {
+		return []git.Worktree{
+			{Path: mainRoot, Branch: "main", Name: "main"},
+			{Path: featureRoot, Branch: "feature-a", Name: "feature-a"},
+		}, nil
+	}
+
+	plan, err := PlanAdoption(projectRoot, deps.Dependencies)
+	if err != nil {
+		t.Fatalf("PlanAdoption returned error: %v", err)
+	}
+	if plan.ProjectRoot != projectRoot || plan.WorktreeRoot != mainRoot || plan.WorktreeName != "main" {
+		t.Fatalf("unexpected adoption plan: %+v", plan)
+	}
+}
+
 func TestPlanAdoptionRejectsLinkedWorktreeOutsideProjectRoot(t *testing.T) {
 	projectRoot := t.TempDir()
 	mainRoot := mkdir(t, filepath.Join(projectRoot, "main"))
@@ -345,14 +395,17 @@ func TestPlanAdoptionRejectsLinkedWorktreeOutsideProjectRoot(t *testing.T) {
 	}
 }
 
-func TestPlanAdoptionRejectsRepoThatDoesNotMatchBranchName(t *testing.T) {
+func TestPlanAdoptionAcceptsRepoThatDoesNotMatchBranchName(t *testing.T) {
 	repoRoot := mkdir(t, filepath.Join(t.TempDir(), "ordinary-repo"))
 	deps := cleanPlanDeps(repoRoot)
 	deps.CurrentBranch = func(string) (string, error) { return "main", nil }
 
-	_, err := PlanAdoption(repoRoot, deps.Dependencies)
-	if !errors.Is(err, ErrInvalidAdoptLayout) {
-		t.Fatalf("expected ErrInvalidAdoptLayout, got %v", err)
+	plan, err := PlanAdoption(repoRoot, deps.Dependencies)
+	if err != nil {
+		t.Fatalf("PlanAdoption returned error: %v", err)
+	}
+	if plan.WorktreeName != "ordinary-repo" {
+		t.Fatalf("expected ordinary-repo worktree, got %+v", plan)
 	}
 }
 

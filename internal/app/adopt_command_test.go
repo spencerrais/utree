@@ -109,6 +109,73 @@ func TestRunAdoptWithDefaultDependenciesAdoptsExistingLayoutFromSubdirectory(t *
 		t.Fatalf("expected no metadata.toml, stat err %v", err)
 	}
 }
+
+func TestRunAdoptWithDefaultDependenciesAdoptsExistingLayoutFromProjectRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	projectRoot := t.TempDir()
+	mainRoot := filepath.Join(projectRoot, "main")
+	if err := os.Mkdir(mainRoot, 0o755); err != nil {
+		t.Fatalf("create main worktree: %v", err)
+	}
+	runInfoGit(t, mainRoot, "init", "-b", "main")
+	runInfoGit(t, mainRoot, "config", "user.email", "test@example.com")
+	runInfoGit(t, mainRoot, "config", "user.name", "Test User")
+	writeInfoFile(t, filepath.Join(mainRoot, "README.md"), "hello\n")
+	runInfoGit(t, mainRoot, "add", "README.md")
+	runInfoGit(t, mainRoot, "commit", "-m", "initial")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	app := App{Stdout: &stdout, Stderr: &stderr, Stdin: strings.NewReader("yes\n"), Adopt: AdoptDependencies{
+		WorkingDir: func() (string, error) { return projectRoot, nil },
+	}}
+
+	exitCode := app.Run([]string{"adopt"})
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr %q", exitCode, stderr.String())
+	}
+	assertContains(t, stdout.String(), "Adoption complete")
+	if info, err := os.Stat(filepath.Join(projectRoot, ".utree")); err != nil || !info.IsDir() {
+		t.Fatalf("expected .utree marker directory, info %#v err %v", info, err)
+	}
+}
+
+func TestRunAdoptWithDefaultDependenciesAllowsBranchNameDifferentFromWorktreeName(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git unavailable")
+	}
+	projectRoot := t.TempDir()
+	worktreeRoot := filepath.Join(projectRoot, "root-folder")
+	if err := os.Mkdir(worktreeRoot, 0o755); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	runInfoGit(t, worktreeRoot, "init", "-b", "develop")
+	runInfoGit(t, worktreeRoot, "config", "user.email", "test@example.com")
+	runInfoGit(t, worktreeRoot, "config", "user.name", "Test User")
+	writeInfoFile(t, filepath.Join(worktreeRoot, "README.md"), "hello\n")
+	runInfoGit(t, worktreeRoot, "add", "README.md")
+	runInfoGit(t, worktreeRoot, "commit", "-m", "initial")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	app := App{Stdout: &stdout, Stderr: &stderr, Stdin: strings.NewReader("yes\n"), Adopt: AdoptDependencies{
+		WorkingDir: func() (string, error) { return worktreeRoot, nil },
+	}}
+
+	exitCode := app.Run([]string{"adopt"})
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr %q", exitCode, stderr.String())
+	}
+	assertContains(t, stdout.String(), "Adoption complete")
+	if info, err := os.Stat(filepath.Join(projectRoot, ".utree")); err != nil || !info.IsDir() {
+		t.Fatalf("expected .utree marker directory, info %#v err %v", info, err)
+	}
+}
+
 func TestRunAdoptWithDefaultDependenciesRejectsExistingUtreeProject(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git unavailable")

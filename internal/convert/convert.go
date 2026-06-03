@@ -150,31 +150,19 @@ func PlanConversion(startDir string, options Options, deps Dependencies) (Plan, 
 func PlanAdoption(startDir string, deps Dependencies) (AdoptPlan, error) {
 	deps = withDefaultDependencies(deps)
 
-	gitRoot, err := deps.GitRoot(startDir)
-	if err != nil {
-		return AdoptPlan{}, err
-	}
-	gitRoot, err = cleanAbs(gitRoot)
+	projectRoot, gitRoot, err := adoptionRoots(startDir, deps.GitRoot)
 	if err != nil {
 		return AdoptPlan{}, err
 	}
 	if err := rejectExistingUtreeProject(gitRoot); err != nil {
 		return AdoptPlan{}, err
 	}
-	projectRoot := filepath.Dir(gitRoot)
 	if projectRoot == gitRoot || filepath.Base(gitRoot) == "." || filepath.Base(gitRoot) == string(filepath.Separator) {
 		return AdoptPlan{}, ErrInvalidAdoptLayout
 	}
 	worktreeName := filepath.Base(gitRoot)
 	if strings.TrimSpace(worktreeName) == "" {
 		return AdoptPlan{}, ErrInvalidAdoptLayout
-	}
-	currentBranch, err := deps.CurrentBranch(gitRoot)
-	if err != nil {
-		return AdoptPlan{}, err
-	}
-	if strings.TrimSpace(currentBranch) == "" || currentBranch != worktreeName {
-		return AdoptPlan{}, fmt.Errorf("%w: worktree directory %q does not match current branch %q", ErrInvalidAdoptLayout, worktreeName, currentBranch)
 	}
 
 	utreeDir := filepath.Join(projectRoot, ".utree")
@@ -219,6 +207,51 @@ func PlanAdoption(startDir string, deps Dependencies) (AdoptPlan, error) {
 		MarkerPath:      utreeDir,
 		LinkedWorktrees: linkedWorktrees,
 	}, nil
+}
+
+func adoptionRoots(startDir string, findGitRoot func(string) (string, error)) (string, string, error) {
+	startDir, err := cleanAbs(startDir)
+	if err != nil {
+		return "", "", err
+	}
+	gitRoot, err := findGitRoot(startDir)
+	if err == nil {
+		gitRoot, err = cleanAbs(gitRoot)
+		if err != nil {
+			return "", "", err
+		}
+		return filepath.Dir(gitRoot), gitRoot, nil
+	}
+	if !errors.Is(err, project.ErrNotGitRepository) {
+		return "", "", err
+	}
+
+	entries, readErr := os.ReadDir(startDir)
+	if readErr != nil {
+		return "", "", fmt.Errorf("read project root %s: %w", startDir, readErr)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == ".utree" {
+			continue
+		}
+		candidate := filepath.Join(startDir, entry.Name())
+		candidateGitRoot, candidateErr := findGitRoot(candidate)
+		if candidateErr != nil {
+			if errors.Is(candidateErr, project.ErrNotGitRepository) {
+				continue
+			}
+			return "", "", candidateErr
+		}
+		candidateGitRoot, candidateErr = cleanAbs(candidateGitRoot)
+		if candidateErr != nil {
+			return "", "", candidateErr
+		}
+		if candidateGitRoot == candidate {
+			return startDir, candidateGitRoot, nil
+		}
+	}
+
+	return "", "", err
 }
 
 func rejectExistingUtreeProject(gitRoot string) error {

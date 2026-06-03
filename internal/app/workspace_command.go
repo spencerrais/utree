@@ -125,36 +125,39 @@ func (a App) runNew(args []string) error {
 func parseNewOptions(args []string) (workspace.NewOptions, error) {
 	var options workspace.NewOptions
 	positionals := []string{}
+	usage := "usage: ut new <name> [<branch-name>] [--base <base-branch>] [--default-branch <branch>] [-d|--detach]"
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "-d", "--detach":
+			options.Detach = true
 		case "--base":
 			value, ok := nextFlagValue(args, &i)
 			if !ok {
-				return workspace.NewOptions{}, errors.New("usage: ut new <name> [<branch-name>] [--base <base-branch>] [--default-branch <branch>]")
+				return workspace.NewOptions{}, errors.New(usage)
 			}
 			options.BaseBranch = value
 		case "--default-branch":
 			value, ok := nextFlagValue(args, &i)
 			if !ok {
-				return workspace.NewOptions{}, errors.New("usage: ut new <name> [<branch-name>] [--base <base-branch>] [--default-branch <branch>]")
+				return workspace.NewOptions{}, errors.New(usage)
 			}
 			options.DefaultBranchOverride = &value
 		default:
 			if strings.HasPrefix(args[i], "--") {
-				return workspace.NewOptions{}, errors.New("usage: ut new <name> [<branch-name>] [--base <base-branch>] [--default-branch <branch>]")
+				return workspace.NewOptions{}, errors.New(usage)
 			}
 			positionals = append(positionals, args[i])
 		}
 	}
 
 	if len(positionals) < 1 || len(positionals) > 2 || strings.TrimSpace(positionals[0]) == "" {
-		return workspace.NewOptions{}, errors.New("usage: ut new <name> [<branch-name>] [--base <base-branch>] [--default-branch <branch>]")
+		return workspace.NewOptions{}, errors.New(usage)
 	}
 	options.WorktreeName = positionals[0]
 	if len(positionals) == 2 {
 		if strings.TrimSpace(positionals[1]) == "" {
-			return workspace.NewOptions{}, errors.New("usage: ut new <name> [<branch-name>] [--base <base-branch>] [--default-branch <branch>]")
+			return workspace.NewOptions{}, errors.New(usage)
 		}
 		options.BranchName = positionals[1]
 	} else {
