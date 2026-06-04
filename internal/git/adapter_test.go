@@ -83,6 +83,7 @@ func TestGitAdapterConstructsStatusAndBranchCommands(t *testing.T) {
 		[]byte(" M README.md\n?? scratch.txt\n"),
 		nil,
 		nil,
+		nil,
 	}}
 	adapter := Adapter{Dir: "/repo/main", Run: runner.run}
 
@@ -105,11 +106,15 @@ func TestGitAdapterConstructsStatusAndBranchCommands(t *testing.T) {
 	if err := adapter.DeleteLocalBranch("feature-a"); err != nil {
 		t.Fatalf("DeleteLocalBranch returned error: %v", err)
 	}
+	if err := adapter.ForceDeleteLocalBranch("feature-a"); err != nil {
+		t.Fatalf("ForceDeleteLocalBranch returned error: %v", err)
+	}
 
 	assertCommands(t, runner.commands, []recordedCommand{
 		{dir: "/repo/feature-a", name: "git", args: []string{"status", "--porcelain"}},
 		{dir: "/repo/main", name: "git", args: []string{"show-ref", "--verify", "--quiet", "refs/heads/feature-a"}},
 		{dir: "/repo/main", name: "git", args: []string{"branch", "-d", "feature-a"}},
+		{dir: "/repo/main", name: "git", args: []string{"branch", "-D", "feature-a"}},
 	})
 	assertNoNetworkCommands(t, runner.commands)
 	assertNoRemoteBranchDeletion(t, runner.commands)

@@ -193,7 +193,22 @@ func TestExecuteRemoveCleanUnmergedConfirmDeletesBranchWhenSecondPromptConfirmed
 	if err != nil {
 		t.Fatalf("ExecuteRemove returned error: %v", err)
 	}
-	want := []string{"has:project:feature-a", "worktree-remove:/repo/feature-a", "branch-delete:feature-a"}
+	want := []string{"has:project:feature-a", "worktree-remove:/repo/feature-a", "branch-force-delete:feature-a"}
+	if strings.Join(deps.calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("expected calls %v, got %v", want, deps.calls)
+	}
+}
+
+func TestExecuteRemoveCleanUnmergedPromptsBeforeSwitchingFromCurrentSession(t *testing.T) {
+	deps := &fakeRemoveExecuteDeps{sessionExists: true, insideTmux: true, currentSession: "project:feature-a", adjacentSwitched: true}
+	stdout := eventWriter{events: &deps.calls}
+
+	_, err := ExecuteRemove(fakeRemovePlan(SafetyCleanUnmerged), deps, strings.NewReader("yes\nyes\n"), stdout)
+	if err != nil {
+		t.Fatalf("ExecuteRemove returned error: %v", err)
+	}
+
+	want := []string{"prompt:Remove worktree?", "prompt:Delete unmerged local branch", "has:project:feature-a", "current", "adjacent:project:feature-a", "worktree-remove:/repo/feature-a", "branch-force-delete:feature-a", "kill:project:feature-a"}
 	if strings.Join(deps.calls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("expected calls %v, got %v", want, deps.calls)
 	}
@@ -332,6 +347,11 @@ func (f *fakeRemoveExecuteDeps) DeleteLocalBranch(branch string) error {
 	return f.branchErr
 }
 
+func (f *fakeRemoveExecuteDeps) ForceDeleteLocalBranch(branch string) error {
+	f.calls = append(f.calls, "branch-force-delete:"+branch)
+	return f.branchErr
+}
+
 func (f *fakeRemoveExecuteDeps) InsideTmux() bool {
 	return f.insideTmux
 }
@@ -356,4 +376,19 @@ func (f *fakeRemoveExecuteDeps) HomeDir() string {
 		return f.homeDir
 	}
 	return "/home/test"
+}
+
+type eventWriter struct {
+	events *[]string
+}
+
+func (e eventWriter) Write(p []byte) (int, error) {
+	text := string(p)
+	if strings.Contains(text, "Remove worktree?") {
+		*e.events = append(*e.events, "prompt:Remove worktree?")
+	}
+	if strings.Contains(text, "Delete unmerged local branch") {
+		*e.events = append(*e.events, "prompt:Delete unmerged local branch")
+	}
+	return len(p), nil
 }

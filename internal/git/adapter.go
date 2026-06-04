@@ -75,6 +75,13 @@ func (a Adapter) DeleteLocalBranch(name string) error {
 	return nil
 }
 
+func (a Adapter) ForceDeleteLocalBranch(name string) error {
+	if _, err := a.run(a.Dir, "git", "branch", "-D", name); err != nil {
+		return fmt.Errorf("git branch -D %s: %w", name, err)
+	}
+	return nil
+}
+
 func (a Adapter) BranchMerged(defaultBranch string, branch string) (bool, error) {
 	output, err := a.run(a.Dir, "git", "branch", "--merged", defaultBranch, "--list", branch)
 	if err != nil {
