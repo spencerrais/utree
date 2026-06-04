@@ -237,6 +237,40 @@ func TestIntegrationRemoveCurrentCleanWorktreeDeletesBranchWithRealGit(t *testin
 	}
 }
 
+func TestIntegrationRemoveCleanUnmergedWorktreeCanForceDeleteBranchWithRealGit(t *testing.T) {
+	projectRoot, mainRoot := newGitProject(t)
+	featurePath := filepath.Join(projectRoot, "unmerged")
+	runGit(t, mainRoot, "worktree", "add", "-b", "unmerged", featurePath, "main")
+	if err := os.WriteFile(filepath.Join(featurePath, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatalf("write feature file: %v", err)
+	}
+	runGit(t, featurePath, "add", "feature.txt")
+	runGit(t, featurePath, "commit", "-m", "feature")
+
+	plan, err := PlanRemove(featurePath, RemoveOptions{WorktreeName: "unmerged"}, nil)
+	if err != nil {
+		t.Fatalf("PlanRemove returned error: %v", err)
+	}
+	if plan.Safety.Kind != SafetyCleanUnmerged {
+		t.Fatalf("expected unmerged safety, got %+v", plan.Safety)
+	}
+
+	removed, err := ExecuteRemove(plan, nil, strings.NewReader("yes\nyes\n"), io.Discard)
+	if err != nil {
+		t.Fatalf("ExecuteRemove returned error: %v", err)
+	}
+	if !removed {
+		t.Fatal("expected worktree removal")
+	}
+	if _, err := os.Stat(featurePath); !os.IsNotExist(err) {
+		t.Fatalf("expected feature worktree to be removed, stat err %v", err)
+	}
+	output := runGit(t, mainRoot, "branch", "--list", "unmerged")
+	if strings.TrimSpace(output) != "" {
+		t.Fatalf("expected unmerged local branch to be force deleted, got %q", output)
+	}
+}
+
 func newGitProject(t *testing.T) (string, string) {
 	t.Helper()
 

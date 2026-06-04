@@ -44,6 +44,7 @@ type RemoveExecutionDependencies interface {
 	KillSession(session string) error
 	WorktreeRemove(path string) error
 	DeleteLocalBranch(branch string) error
+	ForceDeleteLocalBranch(branch string) error
 	InsideTmux() bool
 	CurrentSession() (string, error)
 	SwitchToAdjacentSession(current string) (bool, error)
@@ -119,6 +120,7 @@ func ExecuteRemove(plan RemovePlan, deps RemoveExecutionDependencies, confirmati
 		return false, fmt.Errorf("cannot remove worktree %q: associated local branch not found", plan.WorktreeName)
 	}
 
+	deleteUnmergedBranch := false
 	if plan.Safety.Kind == SafetyCleanUnmerged {
 		if err := writeUnmergedRemovalPrompt(stdout, plan); err != nil {
 			return false, err
@@ -126,6 +128,10 @@ func ExecuteRemove(plan RemovePlan, deps RemoveExecutionDependencies, confirmati
 		if !confirmedScan(confirmationScanner) {
 			return false, nil
 		}
+		if _, err := fmt.Fprintf(stdout, "Delete unmerged local branch '%s'? [y/N] ", plan.BranchName); err != nil {
+			return false, err
+		}
+		deleteUnmergedBranch = confirmedScan(confirmationScanner)
 	} else if plan.Safety.Kind == SafetyCleanMerged {
 		if err := writeMergedRemovalPrompt(stdout, plan); err != nil {
 			return false, err
@@ -150,11 +156,8 @@ func ExecuteRemove(plan RemovePlan, deps RemoveExecutionDependencies, confirmati
 		return true, finishRemoveSession(plan, deps, sessionExists)
 	}
 
-	if _, err := fmt.Fprintf(stdout, "Delete unmerged local branch '%s'? [y/N] ", plan.BranchName); err != nil {
-		return true, err
-	}
-	if confirmedScan(confirmationScanner) {
-		if err := deps.DeleteLocalBranch(plan.BranchName); err != nil {
+	if deleteUnmergedBranch {
+		if err := deps.ForceDeleteLocalBranch(plan.BranchName); err != nil {
 			return true, fmt.Errorf("worktree removed at %s but branch deletion failed for %s: %w", plan.WorktreePath, plan.BranchName, err)
 		}
 	}
@@ -294,6 +297,10 @@ func (d DefaultRemoveExecutionDependencies) WorktreeRemove(path string) error {
 
 func (d DefaultRemoveExecutionDependencies) DeleteLocalBranch(branch string) error {
 	return git.Adapter{Dir: d.gitDir()}.DeleteLocalBranch(branch)
+}
+
+func (d DefaultRemoveExecutionDependencies) ForceDeleteLocalBranch(branch string) error {
+	return git.Adapter{Dir: d.gitDir()}.ForceDeleteLocalBranch(branch)
 }
 
 func (d DefaultRemoveExecutionDependencies) gitDir() string {
