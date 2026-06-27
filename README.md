@@ -98,10 +98,11 @@ ut new feature-a --detach
 ```
 
 Without `--base`, new work starts from the detected default branch. 
+If the requested branch already exists locally, `ut new` creates the worktree from that branch instead of creating a new branch.
 If your current branch is not the default branch, `ut new` warns and asks before continuing.
 If the selected source worktree has a `.env` file, `ut new` asks whether to copy it into the new worktree. 
 When run from inside a worktree, the source is that worktree. 
-When run from the project root, the source is the default-branch worktree if it is checked out.
+When run from the project root, the source is the detected git worktree, then the default-branch worktree if it is checked out.
 Use `-d` or `--detach` to create the worktree and tmux session without switching or attaching to it.
 
 ### `ut open`

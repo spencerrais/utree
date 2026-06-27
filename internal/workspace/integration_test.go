@@ -50,6 +50,35 @@ func TestIntegrationNewWorktreeCreationWithRealGitAndFakeTmux(t *testing.T) {
 	}
 }
 
+func TestIntegrationNewWorktreeFromExistingLocalBranch(t *testing.T) {
+	projectRoot, mainRoot := newGitProject(t)
+	runGit(t, mainRoot, "branch", "feature-existing", "main")
+	deps := &fakeNewExecutionDeps{insideTmux: true}
+
+	plan, err := PlanNew(mainRoot, NewOptions{WorktreeName: "feature-existing"}, NewDependencies{})
+	if err != nil {
+		t.Fatalf("PlanNew returned error: %v", err)
+	}
+	if !plan.UseExistingBranch {
+		t.Fatal("expected existing branch mode")
+	}
+
+	executed, err := ExecuteNew(plan, deps, nil, io.Discard)
+	if err != nil {
+		t.Fatalf("ExecuteNew returned error: %v", err)
+	}
+	if !executed {
+		t.Fatal("expected new worktree execution")
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "feature-existing", ".git")); err != nil {
+		t.Fatalf("expected created worktree .git file: %v", err)
+	}
+	branch := strings.TrimSpace(runGit(t, filepath.Join(projectRoot, "feature-existing"), "branch", "--show-current"))
+	if branch != "feature-existing" {
+		t.Fatalf("expected feature-existing branch, got %q", branch)
+	}
+}
+
 func TestIntegrationNewCopiesEnvFileAfterPrompt(t *testing.T) {
 	projectRoot, mainRoot := newGitProject(t)
 	if err := os.WriteFile(filepath.Join(mainRoot, ".env"), []byte("TOKEN=secret\n"), 0o600); err != nil {
@@ -310,6 +339,10 @@ func runGit(t *testing.T, dir string, args ...string) string {
 type fakeNewExecutionDeps struct {
 	calls      []string
 	insideTmux bool
+}
+
+func (v *fakeNewExecutionDeps) WorktreeAdd(dir string, path string, branch string) error {
+	return git.Adapter{Dir: dir}.WorktreeAdd(path, branch)
 }
 
 func (v *fakeNewExecutionDeps) WorktreeAddNewBranch(dir string, path string, branch string, startPoint string) error {

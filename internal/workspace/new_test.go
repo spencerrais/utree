@@ -50,6 +50,29 @@ func TestPlanNewSeparateWorktreeAndBranchNames(t *testing.T) {
 	}
 }
 
+func TestPlanNewUsesExistingLocalBranchWhenPresent(t *testing.T) {
+	projectRoot, gitRoot := newWorkspaceProject(t, "main")
+	deps := fakePlanDeps(projectRoot, gitRoot, "main", "main")
+	deps.LocalBranchExists = func(dir string, branch string) (bool, error) {
+		if dir != gitRoot || branch != "feature-a" {
+			t.Fatalf("unexpected branch existence check %q %q", dir, branch)
+		}
+		return true, nil
+	}
+
+	plan, err := PlanNew(gitRoot, NewOptions{WorktreeName: "feature-a"}, deps)
+	if err != nil {
+		t.Fatalf("PlanNew returned error: %v", err)
+	}
+
+	if !plan.UseExistingBranch {
+		t.Fatal("expected existing branch mode")
+	}
+	if plan.StartPoint != "main" {
+		t.Fatalf("expected start point to remain main, got %q", plan.StartPoint)
+	}
+}
+
 func TestPlanNewBaseOverridesStartPoint(t *testing.T) {
 	projectRoot, gitRoot := newWorkspaceProject(t, "feature-current")
 	plan, err := PlanNew(gitRoot, NewOptions{WorktreeName: "bugfix-b", BaseBranch: "feature/current-task"}, fakePlanDeps(projectRoot, gitRoot, "main", "feature/current-task"))
@@ -143,7 +166,7 @@ func TestPlanNewFromProjectRootDetectsEnvFileFromDefaultBranchWorktree(t *testin
 	}
 }
 
-func TestPlanNewFromProjectRootSilentlySkipsEnvWhenDefaultBranchWorktreeMissing(t *testing.T) {
+func TestPlanNewFromProjectRootDetectsEnvFromDetectedGitRootWhenDefaultBranchWorktreeMissing(t *testing.T) {
 	projectRoot, gitRoot := newWorkspaceProject(t, "feature-a")
 	writeWorkspaceFile(t, filepath.Join(gitRoot, ".env"), "TOKEN=feature\n")
 	deps := fakePlanDeps(projectRoot, gitRoot, "main", "feature-a")
@@ -159,8 +182,8 @@ func TestPlanNewFromProjectRootSilentlySkipsEnvWhenDefaultBranchWorktreeMissing(
 		t.Fatalf("PlanNew returned error: %v", err)
 	}
 
-	if plan.HasEnvFile || plan.EnvFilePath != "" || plan.EnvFileWorktreeName != "" {
-		t.Fatalf("expected env source to be skipped, got %+v", plan)
+	if !plan.HasEnvFile || plan.EnvFilePath != filepath.Join(gitRoot, ".env") || plan.EnvFileWorktreeName != "feature-a" {
+		t.Fatalf("unexpected env source: %+v", plan)
 	}
 }
 
@@ -210,6 +233,29 @@ func TestExecuteNewCreatesGitWorktreeThenOpensTmux(t *testing.T) {
 	want := []string{
 		"has:repo--feature-a",
 		"git:/repo/main:/repo/feature-a:feature-a:main",
+		"layout:repo--feature-a:/repo/feature-a:nvim .; exec ${SHELL:-/bin/sh} -l|selected,vertical:33%:git status; exec ${SHELL:-/bin/sh} -l",
+		"open:repo--feature-a:true",
+	}
+	if strings.Join(deps.calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("expected calls %v, got %v", want, deps.calls)
+	}
+}
+
+func TestExecuteNewUsesExistingBranchWithoutCreatingBranch(t *testing.T) {
+	plan := NewPlan{Project: project.Project{Root: "/repo", GitRoot: "/repo/main"}, WorktreeName: "feature-a", BranchName: "feature-a", TargetPath: "/repo/feature-a", DefaultBranch: "main", CurrentBranch: "main", StartPoint: "main", UseExistingBranch: true, Config: config.Default()}
+	deps := &fakeExecuteDeps{insideTmux: true}
+
+	executed, err := ExecuteNew(plan, deps, nil, io.Discard)
+	if err != nil {
+		t.Fatalf("ExecuteNew returned error: %v", err)
+	}
+	if !executed {
+		t.Fatal("expected execution")
+	}
+
+	want := []string{
+		"has:repo--feature-a",
+		"git-existing:/repo/main:/repo/feature-a:feature-a",
 		"layout:repo--feature-a:/repo/feature-a:nvim .; exec ${SHELL:-/bin/sh} -l|selected,vertical:33%:git status; exec ${SHELL:-/bin/sh} -l",
 		"open:repo--feature-a:true",
 	}
@@ -388,9 +434,10 @@ func fakePlanDeps(projectRoot string, gitRoot string, defaultBranch string, curr
 		DetectProject: func(startDir string) (project.Project, error) {
 			return project.Project{Root: projectRoot, GitRoot: gitRoot, WorktreeName: filepath.Base(gitRoot)}, nil
 		},
-		LoadConfig:    func(string, config.Overrides) (config.Config, error) { return config.Default(), nil },
-		DefaultBranch: func(project.Project, string, *string) (string, error) { return defaultBranch, nil },
-		CurrentBranch: func(string) (string, error) { return currentBranch, nil },
+		LoadConfig:        func(string, config.Overrides) (config.Config, error) { return config.Default(), nil },
+		DefaultBranch:     func(project.Project, string, *string) (string, error) { return defaultBranch, nil },
+		CurrentBranch:     func(string) (string, error) { return currentBranch, nil },
+		LocalBranchExists: func(string, string) (bool, error) { return false, nil },
 	}
 }
 
@@ -431,6 +478,12 @@ type fakeExecuteDeps struct {
 	insideTmux    bool
 	tmuxErr       error
 	sessionExists bool
+}
+
+func (f *fakeExecuteDeps) WorktreeAdd(dir string, path string, branch string) error {
+	f.gitCalls++
+	f.calls = append(f.calls, "git-existing:"+dir+":"+path+":"+branch)
+	return nil
 }
 
 func (f *fakeExecuteDeps) WorktreeAddNewBranch(dir string, path string, branch string, startPoint string) error {

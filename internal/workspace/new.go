@@ -30,6 +30,7 @@ type NewPlan struct {
 	DefaultBranch                string
 	CurrentBranch                string
 	StartPoint                   string
+	UseExistingBranch            bool
 	Detach                       bool
 	RequiresDefaultBranchWarning bool
 	HasEnvFile                   bool
@@ -39,16 +40,18 @@ type NewPlan struct {
 }
 
 type NewDependencies struct {
-	DetectProject func(startDir string) (project.Project, error)
-	LoadConfig    func(projectRoot string, overrides config.Overrides) (config.Config, error)
-	DefaultBranch func(project.Project, string, *string) (string, error)
-	CurrentBranch func(dir string) (string, error)
-	Worktrees     func(dir string) ([]git.Worktree, error)
-	FileExists    func(path string) (bool, error)
+	DetectProject     func(startDir string) (project.Project, error)
+	LoadConfig        func(projectRoot string, overrides config.Overrides) (config.Config, error)
+	DefaultBranch     func(project.Project, string, *string) (string, error)
+	CurrentBranch     func(dir string) (string, error)
+	Worktrees         func(dir string) ([]git.Worktree, error)
+	LocalBranchExists func(dir string, branch string) (bool, error)
+	FileExists        func(path string) (bool, error)
 }
 
 type NewExecutionDependencies interface {
 	SessionDependencies
+	WorktreeAdd(dir string, path string, branch string) error
 	WorktreeAddNewBranch(dir string, path string, branch string, startPoint string) error
 	CopyFile(source string, target string) error
 }
@@ -92,6 +95,10 @@ func PlanNew(startDir string, options NewOptions, deps NewDependencies) (NewPlan
 		startPoint = defaultBranch
 		requiresWarning = currentBranch != "" && currentBranch != defaultBranch
 	}
+	useExistingBranch, err := deps.LocalBranchExists(proj.GitRoot, branchName)
+	if err != nil {
+		return NewPlan{}, err
+	}
 	envFilePath, envWorktreeName, hasEnvFile, err := planNewEnvSource(proj, defaultBranch, deps)
 	if err != nil {
 		return NewPlan{}, err
@@ -105,6 +112,7 @@ func PlanNew(startDir string, options NewOptions, deps NewDependencies) (NewPlan
 		DefaultBranch:                defaultBranch,
 		CurrentBranch:                currentBranch,
 		StartPoint:                   startPoint,
+		UseExistingBranch:            useExistingBranch,
 		Detach:                       options.Detach,
 		RequiresDefaultBranchWarning: requiresWarning,
 		HasEnvFile:                   hasEnvFile,
@@ -115,40 +123,45 @@ func PlanNew(startDir string, options NewOptions, deps NewDependencies) (NewPlan
 }
 
 func planNewEnvSource(proj project.Project, defaultBranch string, deps NewDependencies) (string, string, bool, error) {
-	sourceRoot := ""
-	sourceName := ""
 	if strings.TrimSpace(proj.WorktreeName) != "" {
-		sourceRoot = proj.GitRoot
-		sourceName = proj.WorktreeName
-	} else {
-		worktrees, err := deps.Worktrees(proj.GitRoot)
-		if err != nil {
-			return "", "", false, err
-		}
-		projectRoot, err := cleanAbs(proj.Root)
-		if err != nil {
-			return "", "", false, err
-		}
-		for _, worktree := range worktrees {
-			path, err := cleanAbs(worktree.Path)
-			if err != nil {
-				return "", "", false, err
-			}
-			if worktree.Branch != defaultBranch || filepath.Dir(path) != projectRoot {
-				continue
-			}
-			sourceRoot = path
-			sourceName = worktree.Name
-			if strings.TrimSpace(sourceName) == "" {
-				sourceName = filepath.Base(path)
-			}
-			break
-		}
+		return planEnvFileAtRoot(proj.GitRoot, proj.WorktreeName, deps)
 	}
-	if strings.TrimSpace(sourceRoot) == "" {
+
+	name := filepath.Base(proj.GitRoot)
+	if path, sourceName, ok, err := planEnvFileAtRoot(proj.GitRoot, name, deps); err != nil || ok {
+		return path, sourceName, ok, err
+	}
+
+	worktrees, err := deps.Worktrees(proj.GitRoot)
+	if err != nil {
+		return "", "", false, err
+	}
+	projectRoot, err := cleanAbs(proj.Root)
+	if err != nil {
+		return "", "", false, err
+	}
+	for _, worktree := range worktrees {
+		path, err := cleanAbs(worktree.Path)
+		if err != nil {
+			return "", "", false, err
+		}
+		if worktree.Branch != defaultBranch || filepath.Dir(path) != projectRoot {
+			continue
+		}
+		sourceName := worktree.Name
+		if strings.TrimSpace(sourceName) == "" {
+			sourceName = filepath.Base(path)
+		}
+		return planEnvFileAtRoot(path, sourceName, deps)
+	}
+	return "", "", false, nil
+}
+
+func planEnvFileAtRoot(root string, name string, deps NewDependencies) (string, string, bool, error) {
+	if strings.TrimSpace(root) == "" {
 		return "", "", false, nil
 	}
-	envPath := filepath.Join(sourceRoot, ".env")
+	envPath := filepath.Join(root, ".env")
 	exists, err := deps.FileExists(envPath)
 	if err != nil {
 		return "", "", false, err
@@ -156,7 +169,7 @@ func planNewEnvSource(proj project.Project, defaultBranch string, deps NewDepend
 	if !exists {
 		return "", "", false, nil
 	}
-	return envPath, sourceName, true, nil
+	return envPath, name, true, nil
 }
 
 func ExecuteNew(plan NewPlan, deps NewExecutionDependencies, confirmation io.Reader, stdout io.Writer) (bool, error) {
@@ -187,7 +200,12 @@ func ExecuteNew(plan NewPlan, deps NewExecutionDependencies, confirmation io.Rea
 		return false, fmt.Errorf("tmux session already exists: %s", session)
 	}
 
-	if err := deps.WorktreeAddNewBranch(plan.Project.GitRoot, plan.TargetPath, plan.BranchName, plan.StartPoint); err != nil {
+	if plan.UseExistingBranch {
+		err = deps.WorktreeAdd(plan.Project.GitRoot, plan.TargetPath, plan.BranchName)
+	} else {
+		err = deps.WorktreeAddNewBranch(plan.Project.GitRoot, plan.TargetPath, plan.BranchName, plan.StartPoint)
+	}
+	if err != nil {
 		return false, err
 	}
 	if plan.HasEnvFile {
@@ -240,6 +258,11 @@ func withDefaultNewDependencies(deps NewDependencies) NewDependencies {
 	if deps.Worktrees == nil {
 		deps.Worktrees = func(dir string) ([]git.Worktree, error) {
 			return git.Adapter{Dir: dir}.WorktreeList()
+		}
+	}
+	if deps.LocalBranchExists == nil {
+		deps.LocalBranchExists = func(dir string, branch string) (bool, error) {
+			return git.Adapter{Dir: dir}.LocalBranchExists(branch)
 		}
 	}
 	if deps.FileExists == nil {
@@ -300,6 +323,10 @@ func copyFile(source string, target string) error {
 
 type DefaultNewExecutionDependencies struct {
 	TMUX func() string
+}
+
+func (d DefaultNewExecutionDependencies) WorktreeAdd(dir string, path string, branch string) error {
+	return git.Adapter{Dir: dir}.WorktreeAdd(path, branch)
 }
 
 func (d DefaultNewExecutionDependencies) WorktreeAddNewBranch(dir string, path string, branch string, startPoint string) error {
